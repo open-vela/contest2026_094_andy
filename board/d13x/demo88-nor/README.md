@@ -338,7 +338,8 @@ This image replaces it locally with constrained clean/invalidate operations
 for both descriptors and capture buffers. Continuous three-second recording
 and WAV finalization have passed on the board.
 
-The next board adaptation is GMAC0 RMII Ethernet:
+GMAC0 RMII Ethernet is implemented and registers `eth0` through the NuttX
+network stack:
 
 ```text
 GMAC0:       0x10280000, raw CLIC source 39
@@ -350,7 +351,8 @@ PHY clock:   PE.10 CLK_OUT2 25 MHz
 RMII refclk: RTL8201F to PE.3, 50 MHz
 ```
 
-The first checkpoint is limited to clocks, SYSCFG RMII external-clock mode,
-pinmux, reset sequencing, MDIO, PHY ID, and link state. Packet DMA follows only
-after that passes. RX/TX descriptors and packet buffers require 32-byte
-alignment and the same compiler-constrained cache operations proven by DMIC.
+The MDIO checkpoint (clocks, SYSCFG RMII external-clock mode, pinmux, reset
+sequencing, PHY ID, link state) passed before packet DMA was enabled. RX/TX
+descriptors and packet buffers require 32-byte alignment and use the same
+compiler-constrained cache operations proven by DMIC. The SDIO Wi-Fi bring-up
+for the module on SDMC0 lives in `app/wifi_test/`.
