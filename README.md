@@ -3,6 +3,8 @@
 Contest team `094/andy` port of openvela/NuttX to the ArtInChip D133CBS
 demo88-nor board. The current target boots from 16 MiB SPI NOR, runs from the
 on-chip SRAM, and exposes an interactive NSH console on UART0 at 115200 baud.
+Storage, display/touch, audio and networking (GMAC0 RMII Ethernet and SDIO
+Wi-Fi) are brought up and verified on the board.
 
 ## Repository Layout
 
@@ -22,6 +24,8 @@ on-chip SRAM, and exposes an interactive NSH console on UART0 at 115200 baud.
 - `app/tf_test/`: SDMC1 TF-card mount, geometry, and read/write tests.
 - `app/speaker_test/`: DSPK1 WAV playback and generated-tone tests.
 - `app/mic_test/`: DMIC capture to WAV and immediate speaker loopback.
+- `app/recorder_app/`: touch-first WAV recorder/player over the onboard audio path.
+- `app/wifi_test/`: SDMC0 SDIO Wi-Fi bring-up checkpoints and the `wlan0` netdev.
 - `logs/`: exported AI coding logs and submission metadata.
 
 The manifest maps these directories into the openvela workspace without
@@ -406,18 +410,88 @@ Continuous three-second capture and WAV finalization now pass on the physical
 board. The speaker path is independently verified; `mic_test loop` remains the
 recommended combined regression command.
 
-## Next: Wired Ethernet
+## GMAC0 RMII Ethernet Test
 
-The next adaptation target is the populated GMAC0 RMII path. The board uses an
-RTL8201F PHY at MDIO address 0 and an HR911105A RJ45. PE.0..PE.5 and PE.7..PE.9
-use mux function 2 for RMII data and management signals. PE.6 is the active-low
-PHY reset GPIO. PE.10 uses mux function 2 as CLK_OUT2 and supplies the PHY with
-25 MHz; the PHY returns the 50 MHz RMII reference clock on PE.3.
+The populated GMAC0 RMII port is enabled in the default `nsh` configuration and
+registers a standard NuttX network device as `eth0`.
 
-Bring-up will be split into two checkpoints. The first enables GMAC0 clock and
-reset, pinmux, SYSCFG RMII external-clock selection, PHY reset, and MDIO reads;
-it must identify the RTL8201F at address 0 before packet DMA is enabled. The
-second registers a NuttX Ethernet interface and adds cache-safe RX/TX descriptor
-rings, IPv4/ARP/ICMP, DHCP, UDP/TCP, and ping tests. Ethernet buffers must reuse
-the DMIC-proven constrained cache maintenance rather than the broken vendor
-range helper.
+```text
+Controller:  GMAC0 at 0x10280000, raw CLIC source 39
+PHY:         RTL8201F at MDIO address 0
+RJ45:        HR911105A
+RMII:        PE.0..PE.5 and PE.7..PE.9, mux function 2
+PHY reset:   PE.6, active low
+PHY clock:   PE.10 as CLK_OUT2, 25 MHz output to the PHY
+RMII refclk: RTL8201F to PE.3, 50 MHz
+MAC address: 02:13:58:88:00:01
+```
+
+Bring-up follows the two planned checkpoints. The first enables the GMAC0 clock
+and reset, the RMII pinmux and the SYSCFG external reference-clock selection,
+releases the PHY reset, and requires the RTL8201F to answer at MDIO address 0
+before packet DMA starts. The second registers the NuttX Ethernet interface and
+adds cache-safe RX/TX descriptor rings with IPv4/ARP/ICMP, UDP/TCP, DHCP and
+`wget`. Link state is polled from the work queue, and the descriptor rings and
+packet buffers reuse the DMIC-proven compiler-constrained cache maintenance
+instead of the broken vendor range helper.
+
+The network initialization thread runs DHCP on `eth0` during boot. With no DHCP
+server on the link, configure a static address instead:
+
+```text
+nsh> ifconfig
+nsh> renew eth0
+   or
+nsh> ifconfig eth0 192.168.137.88 netmask 255.255.255.0 gw 192.168.137.1 dns 192.168.137.1
+nsh> ping -c 4 192.168.137.1
+nsh> wget http://192.168.137.1/
+```
+
+PHY identification, 10/100 link negotiation, DHCP and static address
+configuration, ARP, ICMP ping, DNS resolution and an HTTP transfer through
+`wget` have all passed board testing. When the board is attached to a host that
+shares its own connection, outbound internet access also depends on that host's
+routing and firewall configuration.
+
+## SDIO Wi-Fi Test
+
+The onboard SDIO Wi-Fi module is powered through PD.7 and enumerated on SDMC0.
+The bring-up code and the fullmac IEEE 802.11 network device live in
+`app/wifi_test/`. The firmware image is inlined there as
+`fmacfw_8800d80_u02.h`, so the build has no dependency on the vendor source tree.
+
+The application is disabled in the shipped `nsh` configuration so that NSH
+starts quickly. Enable it in the board configuration when Wi-Fi is needed:
+
+```text
+CONFIG_D13X_SDMC0_WIFI=y
+CONFIG_D13X_SDMC0_WIFI_POWER_GPIO="PD.7"
+CONFIG_LVX_USE_DEMO_CONTEST2026_094_WIFI_TEST=y
+CONFIG_LVX_USE_DEMO_CONTEST2026_094_WIFI_AUTO_START=y   # optional
+```
+
+Every stage is its own command, so a failure points at exactly one step:
+
+```text
+probe / cccr / cis          SDIO enumeration (CMD5, CCCR, CIS)
+enable / cmd53              function 1 enable and block-mode transfer
+memtest / fwload / fwstate  firmware download, read-back and start
+bringup                     reset, version, stack start, RF calibration, MAC start
+addif / scan / scanpoll     STA interface and channel scan
+netreg                      register wlan0 through the NuttX 802.11 netdev
+rxpoll                      dump raw RX packets from the firmware
+```
+
+```text
+nsh> wifi_test probe
+nsh> wifi_test bringup
+nsh> wifi_test netreg
+nsh> ifup wlan0
+nsh> ifconfig wlan0
+```
+
+Firmware download and start, the post-firmware message chain (reset, version,
+stack start, RF calibration, ME/channel configuration and MAC start), channel
+scan, `wlan0` registration and DHCP over the air have passed board testing. Its
+RX/TX buffers use the same constrained cache maintenance as the GMAC0 and DMIC
+paths.
